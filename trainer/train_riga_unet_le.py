@@ -19,6 +19,7 @@ gt_type_train_to_annotator = {
     5: 'A6'
 }
 
+AUX_WEIGHT = 0.3
 
 def save_checkpoint(model, optimizer, save_path):
     checkpoint = {
@@ -27,8 +28,8 @@ def save_checkpoint(model, optimizer, save_path):
     torch.save(checkpoint, save_path)
 
 
-def train_riga_tab(args, log_folder, checkpoint_folder, visualization_folder, metrics_folder,
-                   model, optimizer, loss_func, train_set, val_set, test_set, gt_train_name):
+def train_riga_le(args, log_folder, checkpoint_folder, visualization_folder, metrics_folder,
+                   model, optimizer, loss_function, train_set, val_set, test_set, gt_train_name):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
 
     model = model.cuda()
@@ -38,7 +39,7 @@ def train_riga_tab(args, log_folder, checkpoint_folder, visualization_folder, me
 
     n_trainable_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('Number of trainable params:', (n_trainable_parameters / 1.0e+6), 'M')
-    experiment_name = f'{gt_train_name}_loop{args.loop}'
+    experiment_name = f'{gt_train_name}_loop{args.loop}_{args.notes}'
     print(f'Experiment: {experiment_name}')
 
     wandb.init(
@@ -54,41 +55,36 @@ def train_riga_tab(args, log_folder, checkpoint_folder, visualization_folder, me
         train_loss = 0.0
         train_soft_dice_disc = 0.0
         train_soft_dice_cup = 0.0
-
         best_val_loss = float('inf')
-        best_val_dice = 0
 
         for step, data in enumerate(tqdm(train_loader, total=len(train_loader))):
-            imgs = data['image'].to(dtype=torch.float32).cuda()
+            imgs = data['image'].cuda()
             mask = data['mask']
 
             optimizer.zero_grad()
             with autocast():
-                output = model({'image': imgs})
+                outputs = model({'image': imgs})
 
-            if args.use_mix_label:
-                if args.mix_label_type == 'intersection':
-                    intersection = (mask[args.gt_index_1] * mask[args.gt_index_2])
-                    gt_mask = intersection.cuda()
-                elif args.mix_label_type == 'union':
-                    total = (mask[args.gt_index_1] + mask[args.gt_index_2])
-                    intersection = (mask[args.gt_index_1] * mask[args.gt_index_2])
-                    gt_mask = (total - intersection).cuda()
-            else:
-                if args.gt_type_train == -1:
-                    mask_major_vote = torch.stack(mask, dim=0).sum(dim=0) / args.rater_num
-                    gt_mask = mask_major_vote.to(dtype=torch.float32).cuda()
-                else:
-                    gt_mask = mask[args.gt_type_train].cuda()
+            mask_major_vote = torch.stack(mask, dim=0).sum(dim=0) / args.rater_num
+            gt_mask = mask_major_vote.cuda()
 
-            loss = loss_func(output['raw'], gt_mask)
-            amp_grad_scaler.scale(loss).backward()
+            total_loss = 0
+            outputs_sigmoid = []
+            weights = [AUX_WEIGHT if i < len(outputs) - 1 else 1 for i in range(len(outputs))]
+            for i, out in enumerate(outputs):
+                out = torch.nn.functional.interpolate(out, size=gt_mask.shape[2:])
+                outputs_sigmoid.append(torch.sigmoid(out))
+                loss_value = loss_function(out, gt_mask)
+                total_loss += weights[i] * loss_value
+            
+            preds = torch.stack(outputs_sigmoid, dim=0).sum(dim=0) / len(outputs)
+
+            amp_grad_scaler.scale(total_loss).backward()
             amp_grad_scaler.unscale_(optimizer)
             amp_grad_scaler.step(optimizer)
             amp_grad_scaler.update()
 
-            train_loss += (loss.item() * imgs.size(0))
-            preds = torch.sigmoid(output['raw']).to(dtype=torch.float32)
+            train_loss += (total_loss.item() * imgs.size(0))
             train_soft_dice_cup = train_soft_dice_cup + get_soft_dice(outputs=preds[:, 1, :, :].cpu(),
                                                                       masks=gt_mask[:, 1, :, :].cpu()) * imgs.size(0)
             train_soft_dice_disc = train_soft_dice_disc + get_soft_dice(outputs=preds[:, 0, :, :].cpu(),
@@ -98,7 +94,7 @@ def train_riga_tab(args, log_folder, checkpoint_folder, visualization_folder, me
         wandb.log({"Train/dice_cup": train_soft_dice_cup / train_set.__len__()})
 
         if args.validate:
-            val_loss, val_soft_dice_disc, val_soft_dice_cup = validate_riga_tab(args, model, val_set, loss_func)
+            val_loss, val_soft_dice_disc, val_soft_dice_cup = validate_riga_le(args, model, val_set, loss_function)
             wandb.log({"Loss/val": val_loss})
             wandb.log({"Val/dice_disc": val_soft_dice_disc})
             wandb.log({"Val/dice_cup": val_soft_dice_cup})
@@ -106,20 +102,12 @@ def train_riga_tab(args, log_folder, checkpoint_folder, visualization_folder, me
             if val_loss <= best_val_loss:
                 save_checkpoint(model, optimizer, checkpoint_folder + '/best_loss.pt')
                 best_val_loss = val_loss
-            
-            # mean_val_dice = (val_soft_dice_cup + val_soft_dice_disc) / 2
-            # if mean_val_dice >= best_val_dice:
-            #     save_checkpoint(model, optimizer, checkpoint_folder + '/best_dice.pt')
-            #     best_val_dice = mean_val_dice
-
-        # if this_epoch % args.checkpoint_frequency == 0 and this_epoch > 0:
-        #     save_checkpoint(model, optimizer, checkpoint_folder + f'/epoch_{this_epoch}.pt')        
 
     save_checkpoint(model, optimizer, checkpoint_folder + '/last.pt')
-    test_riga_tab(args, visualization_folder, metrics_folder, model, test_set)
+    test_riga_le(args, visualization_folder, metrics_folder, model, test_set)
 
 
-def validate_riga_tab(args, model, val_set, loss_func):
+def validate_riga_le(args, model, val_set, loss_function, skip_idx=None):
     model = model.cuda()
     val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_worker, pin_memory=True)
 
@@ -130,29 +118,32 @@ def validate_riga_tab(args, model, val_set, loss_func):
 
     for step, data in enumerate(tqdm(val_loader, total=len(val_loader))):
         with torch.no_grad():
-            imgs = data['image'].to(dtype=torch.float32).cuda()
+            imgs = data['image'].cuda()
             mask = data['mask']
 
-            output = model({'image': imgs})
-            if args.use_mix_label:
-                if args.mix_label_type == 'intersection':
-                    intersection = (mask[args.gt_index_1] * mask[args.gt_index_2])
-                    gt_mask = intersection.cuda()
-                elif args.mix_label_type == 'union':
-                    total = (mask[args.gt_index_1] + mask[args.gt_index_2])
-                    intersection = (mask[args.gt_index_1] * mask[args.gt_index_2])
-                    gt_mask = (total - intersection).cuda()
-            else:
-                if args.gt_type_train == -1:
-                    mask_major_vote = torch.stack(mask, dim=0).sum(dim=0) / args.rater_num
-                    gt_mask = mask_major_vote.to(dtype=torch.float32).cuda()
-                else:
-                    gt_mask = mask[args.gt_type_train].cuda()
-            
-            loss = loss_func(output['raw'], gt_mask)
-            preds = torch.sigmoid(output['raw'])
+            with autocast():
+                outputs = model({'image': imgs})
 
-            val_loss += (loss.item() * imgs.size(0))
+            mask_major_vote = torch.stack(mask, dim=0).sum(dim=0) / args.rater_num
+            gt_mask = mask_major_vote.cuda()
+
+            total_loss = 0
+            outputs_sigmoid = []
+            weights = [AUX_WEIGHT if i < len(outputs) - 1 else 1 for i in range(len(outputs))]
+
+            if skip_idx is not None:
+                outputs = outputs[skip_idx:]
+                weights = weights[skip_idx:]
+
+            for i, out in enumerate(outputs):
+                out = torch.nn.functional.interpolate(out, size=gt_mask.shape[2:])
+                outputs_sigmoid.append(torch.sigmoid(out))
+                loss_value = loss_function(out, gt_mask)
+                total_loss += weights[i] * loss_value
+            
+            preds = torch.stack(outputs_sigmoid, dim=0).sum(dim=0) / len(outputs)
+
+            val_loss += (total_loss.item() * imgs.size(0))
             val_soft_dice_disc += get_soft_dice(
                 outputs=preds[:, 0, :, :].cpu(),
                 masks=gt_mask[:, 0, :, :].cpu()) * imgs.size(0)
@@ -172,13 +163,13 @@ def test_visualization(imgs_name, Preds_visual, visualization_folder):
         Pred = np.uint8(Preds_visual[idx].detach().cpu().numpy() * 255)
         Pred_disc = cv2.applyColorMap(Pred[0], cv2.COLORMAP_JET)
         Pred_cup = cv2.applyColorMap(Pred[1], cv2.COLORMAP_JET)
-        Pred_path = visualization_folder + '/' + imgs_name[idx][15:-4] + '_Pred_TAB.png'
+        Pred_path = visualization_folder + '/' + imgs_name[idx][15:-4] + '_Pred.png'
         print(Pred_path)
         os.makedirs(os.path.dirname(Pred_path), exist_ok=True)
         cv2.imwrite(Pred_path, 0.5 * Pred_disc + 0.5 * Pred_cup)
 
 
-def test_riga_tab(args, visualization_folder, metrics_folder, model, test_set):
+def test_riga_le(args, visualization_folder, metrics_folder, model, test_set):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = model.cuda()
@@ -209,9 +200,14 @@ def test_riga_tab(args, visualization_folder, metrics_folder, model, test_set):
 
             mask_major_vote = torch.stack(mask, dim=0).sum(dim=0) / args.rater_num
             mask_major_vote = mask_major_vote.to(dtype=torch.float32)
-            output = model({'image': imgs, 'mask': mask_major_vote})
+            outputs = model({'image': imgs, 'mask': mask_major_vote})
 
-            preds = torch.sigmoid(output['raw'])
+            outputs_sigmoid = []
+            for out in outputs:
+                out = torch.nn.functional.interpolate(out, size=mask_major_vote.shape[2:])
+                outputs_sigmoid.append(torch.sigmoid(out))
+            
+            preds = torch.stack(outputs_sigmoid, dim=0).sum(dim=0) / len(outputs)
 
             imgs_visual.extend(data['name'])
             Preds_visual.append(preds)

@@ -12,9 +12,10 @@ def main():
     parser.add_argument("--dataset", choices=["RIGA"], default="RIGA")
     parser.add_argument("--phase", choices=["train", "test"], default="train")
     parser.add_argument("--validate", action="store_true")
-    parser.add_argument("--net_arch", choices=["TAB", 'Unet'], default="Unet")
+    parser.add_argument("--net_arch", choices=["TAB", "Unet", "UnetLE"], default="Unet")
     parser.add_argument("--rater_num", type=int, default=6)
     parser.add_argument("--loss_func", choices=["bce"], default="bce")
+    parser.add_argument("--notes", type=str, default='')
 
     # pretrained params
     parser.add_argument("--pretrained", type=int, default=0, help="whether to load pretrained models.")
@@ -29,7 +30,7 @@ def main():
 
     # training settings: classes; bs; lr; EPOCH; device_id
     parser.add_argument('--random_seed', type=int, default=27)
-    parser.add_argument('--checkpoint_frequency', type=int, default=20)
+    parser.add_argument('--checkpoint_frequency', type=int, default=150)
     parser.add_argument("--rank", default=1, type=int)
     parser.add_argument("--num_classes", default=2, type=int)
     parser.add_argument("--batch_size", default=16, type=int)

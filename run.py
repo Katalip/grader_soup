@@ -5,12 +5,12 @@ from loss_func.get_loss import get_loss_func
 from dataset.get_dataset import getDataset
 
 from trainer.train_riga import train_riga_tab, test_riga_tab
+from trainer.train_riga_unet_le import train_riga_le, test_riga_le
 
 
 def train(args):
     log_folder, checkpoint_folder, visualization_folder, metrics_folder, gt_train_name = generate_output_folder(args)
 
-    print('here')
     # network
     model = build_model(args)
 
@@ -29,9 +29,13 @@ def train(args):
     # loss_func
     loss_func = get_loss_func(args)
 
-    if args.dataset == "RIGA":
+    if args.dataset == "RIGA" and args.net_arch == 'Unet':
         train_riga_tab(args, log_folder, checkpoint_folder, visualization_folder, metrics_folder, model, optimizer,
                     loss_func, train_set, valid_set, test_set, gt_train_name)
+    elif args.dataset == "RIGA" and args.net_arch == 'UnetLE':
+        train_riga_le(args, log_folder, checkpoint_folder, visualization_folder, metrics_folder, model, optimizer,
+                    loss_func, train_set, valid_set, test_set, gt_train_name)
+
 
 
 def test(args):
