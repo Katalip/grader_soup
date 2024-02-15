@@ -28,13 +28,22 @@ def save_checkpoint(model, optimizer, save_path):
     torch.save(checkpoint, save_path)
 
 
+class RMSELoss(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mse = torch.nn.MSELoss()
+        
+    def forward(self,yhat,y):
+        return torch.sqrt(self.mse(yhat,y))
+
+
 def train_riga_le(args, log_folder, checkpoint_folder, visualization_folder, metrics_folder,
                    model, optimizer, loss_function, train_set, val_set, test_set, gt_train_name):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
 
     model = model.cuda()
     train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_worker, pin_memory=True)
-    
+    rmse_loss = RMSELoss()
     amp_grad_scaler = GradScaler()
 
     n_trainable_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -53,6 +62,7 @@ def train_riga_le(args, log_folder, checkpoint_folder, visualization_folder, met
         print(this_epoch)
         model.train()
         train_loss = 0.0
+        train_var_loss = 0.0
         train_soft_dice_disc = 0.0
         train_soft_dice_cup = 0.0
         best_val_loss = float('inf')
@@ -72,12 +82,26 @@ def train_riga_le(args, log_folder, checkpoint_folder, visualization_folder, met
             outputs_sigmoid = []
             weights = [AUX_WEIGHT if i < len(outputs) - 1 else 1 for i in range(len(outputs))]
             for i, out in enumerate(outputs):
-                out = torch.nn.functional.interpolate(out, size=gt_mask.shape[2:])
+                layer_gt_mask = gt_mask
+                if args.use_label_sampling:
+                    if i < len(outputs) - 1:
+                        mask_index = np.random.randint(0, len(mask))
+                        layer_gt_mask = mask[mask_index].cuda()
+                
+
+                out = torch.nn.functional.interpolate(out, size=layer_gt_mask.shape[2:])
                 outputs_sigmoid.append(torch.sigmoid(out))
-                loss_value = loss_function(out, gt_mask)
+                loss_value = loss_function(out, layer_gt_mask)
                 total_loss += weights[i] * loss_value
             
             preds = torch.stack(outputs_sigmoid, dim=0).sum(dim=0) / len(outputs)
+
+            if args.use_var_loss:
+                variance_heatmap_output = torch.stack(outputs_sigmoid, dim=0).var(dim=0)
+                variance_heatmap_mask = torch.stack(mask, dim=0).var(dim=0)
+                var_loss = rmse_loss(variance_heatmap_output, variance_heatmap_mask.half().cuda())
+                total_loss += 10*var_loss
+                train_var_loss += 10*var_loss * imgs.size(0)
 
             amp_grad_scaler.scale(total_loss).backward()
             amp_grad_scaler.unscale_(optimizer)
@@ -92,6 +116,9 @@ def train_riga_le(args, log_folder, checkpoint_folder, visualization_folder, met
         wandb.log({"Loss/train": train_loss / train_set.__len__()})
         wandb.log({"Train/dice_disc": train_soft_dice_disc / train_set.__len__()})
         wandb.log({"Train/dice_cup": train_soft_dice_cup / train_set.__len__()})
+
+        if args.use_var_loss:
+            wandb.log({"Train/var_loss": train_var_loss / train_set.__len__()})
 
         if args.validate:
             val_loss, val_soft_dice_disc, val_soft_dice_cup = validate_riga_le(args, model, val_set, loss_function)
