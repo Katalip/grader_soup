@@ -11,7 +11,7 @@ def generate_output_folder(args):
             gt_train_name = f'A{args.gt_type_train + 1}'
 
     output_folder_name = args.output_dir + '/' + args.dataset + "_gt_annots_train_" + str(
-        gt_train_name) + "_" + args.net_arch + "_" + args.loss_func + "_pretrain" + str(
+        gt_train_name) + "_" + args.net_arch + "_" + args.notes + "_" + args.loss_func + "_pretrain" + str(
         args.pretrained) + "_validate" + str(args.validate)
     if not os.path.exists(output_folder_name):
         os.makedirs(output_folder_name)

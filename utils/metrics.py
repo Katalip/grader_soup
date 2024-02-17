@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import scipy
 
 
 def get_dice_threshold(output, mask, threshold):
@@ -116,3 +117,73 @@ def get_GED(batch_label_list, batch_pred_list):
         GED_temp = generalized_energy_distance(label_list=batch_label_list[idx], pred_list=batch_pred_list[idx])
         GED = GED + GED_temp
     return GED / batch_size
+
+
+def get_uncertainty_metrics(predictions, labels, T):
+    '''Calculates the uncertainty metrics
+    Args:
+        predictions: A numpy array of shape (N, C, H, W) or (N, T, C, H, W)
+        labels: A numpy array of shape (N, H, W) used to calculate the Negative Log-Likelihood
+        T: The number of initial heads to skip in the ensemble to calculate uncertainty
+    Returns:
+        A dictionary of metrics (Entropy, Mutual Information, Variance, Negative Log-Likelihood)
+    '''
+    # (N, num_heads, C, H, W)
+    num_heads = predictions.shape[1]
+    assert T < num_heads, 'SKIP_FIRST_T must be less than the number of heads'
+    num_classes = predictions.shape[2]
+
+    # these are uncertainty heatmaps
+    entropy_maps = []
+    variance_maps = []
+    mi_maps = []
+    # these are uncertainty metrics for each sample
+    entropy_sum = []
+    variance_sum = []
+    mi_sum = []
+    # area under layer agreement curve AULA
+    aula_per_class = dict()
+    for i in range(1, num_classes):  # ignore background
+        aula_per_class[f'aula_{i}'] = []
+    # calibration (NLL)
+    nlls = []
+        
+    # convert labels to one hot
+    # labels = np.eye(num_classes)[labels.astype(np.uint8)]  # (N, H, W) -> (N, H, W, C)
+    # labels = np.transpose(labels, (0, 3, 1, 2))  # (N, H, W, C) -> (N, C, H, W)
+
+    for predicted, label in zip(predictions, labels):
+        # softmax along channel axis (NH, C, H, W)
+        pred = scipy.special.softmax(predicted[T:, ...], axis=1)
+        # average along layer ensemble heads. Keep only the last T heads
+        # ([T:], C, H, W) -> (C, H, W)
+        avg_pred = np.mean(pred, axis=0)
+
+        # calculate entropy
+        entropy = -np.sum(np.mean(pred, axis=0) * np.log(np.mean(pred, axis=0) + 1e-5), axis=0)
+        entropy_maps.append(entropy)
+        entropy_sum.append(np.sum(entropy))
+        
+        # calculate variance (after argmax on channel axis)
+        variance = np.var(np.argmax(pred, axis=1), axis=0)
+        variance_maps.append(variance)
+        variance_sum.append(np.sum(variance))
+
+        # calculate mutual information
+        expected_entropy = -np.mean(np.sum(pred * np.log(pred + 1e-5), axis=1), axis=0)
+        mi = entropy - expected_entropy
+        mi_maps.append(mi)
+        mi_sum.append(np.sum(mi))
+
+        # calculate negative log-likelihood
+        # label (C, H, W); avg_pred (C, H, W)
+        nll = -np.mean(np.sum(label * np.log(avg_pred + 1e-5), axis=0))
+        nlls.append(nll)
+    
+    metrics = {
+        'entropy': entropy_sum,
+        'variance': variance_sum,
+        'mi': mi_sum,
+        'nll': nlls
+    }
+    return metrics, entropy_maps, variance_maps, mi_maps
