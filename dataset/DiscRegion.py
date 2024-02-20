@@ -31,13 +31,14 @@ def get_data_path_list(root, sub_set_list, rater_num):
 
 
 class Disc_Cup(data.Dataset):
-    def __init__(self, args, data_path_list):  # img+mask1+mask2+...+mask6 (7 columns list)
+    def __init__(self, args, data_path_list, augs=None):  # img+mask1+mask2+...+mask6 (7 columns list)
         super(Disc_Cup, self).__init__()
         self.root = args.dataroot + '/'
         self.data_path_list = data_path_list
         self.num_rater = args.rater_num
         self.scale_size = (args.img_width, args.img_height)
         self.standardize = args.standardize
+        self.augs = augs
 
     def __len__(self):
         return len(self.data_path_list)
@@ -45,7 +46,14 @@ class Disc_Cup(data.Dataset):
     def __getitem__(self, index):
         temp_path = self.data_path_list[index]
         img_path = self.root + temp_path[0]
-        img = transforms.ToTensor()(PIL.Image.open(img_path).convert('RGB').resize(self.scale_size))
+        if self.augs is not None:
+            img = PIL.Image.open(img_path).convert('RGB').resize(self.scale_size)
+            transformed = self.augs(image=np.array(img))
+            img = transformed["image"]
+            img = transforms.ToTensor()(PIL.Image.fromarray(img))
+        else:
+            img = transforms.ToTensor()(PIL.Image.open(img_path).convert('RGB').resize(self.scale_size))
+
         if self.standardize:
             for i in range(img.size(0)):
                 img[i] = (img[i]-MEAN_AND_STD['mean_rgb'][i]) / MEAN_AND_STD['std_rgb'][i]

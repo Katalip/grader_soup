@@ -53,6 +53,11 @@ def main():
     parser.add_argument('--gt_index_1', type=int, default=0)
     parser.add_argument('--gt_index_2', type=int, default=0)
 
+    # layer ensembles setting
+    parser.add_argument("--use_label_sampling", action="store_true")
+    parser.add_argument("--use_var_loss", action="store_true")
+    parser.add_argument("--le_skip_encoder", action='store_true')
+
     args = parser.parse_args()
     print(args)
 

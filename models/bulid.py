@@ -13,7 +13,7 @@ def build_model(args):
         model = UNet()
         print('unet_selected')
     elif args.net_arch == 'UnetLE':
-        model = UNetLE()
+        model = UNetLE(skip_encoder=args.le_skip_encoder)
         print('unet_le_selected')
     return model
 

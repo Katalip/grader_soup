@@ -36,7 +36,8 @@ class UNetLE(nn.Module):
         encoder_name = 'resnet50',
         encoder_pretrain="imagenet",
         output_type={'raw'},
-        n_classes=2
+        n_classes=2,
+        skip_encoder=False
     ):
         """
         Args:
@@ -52,6 +53,7 @@ class UNetLE(nn.Module):
 
         self.output_type = output_type
         self.encoder_pretrain = encoder_pretrain
+        self.skip_encoder = skip_encoder
 
         model = Unet(encoder_name=encoder_name, encoder_weights=encoder_pretrain)
         self.encoder = model.encoder
@@ -61,15 +63,16 @@ class UNetLE(nn.Module):
             nn.Conv2d(decoder_dims[-1], n_classes, kernel_size=1),
         )
 
-        encoder_dims = self.encoder.out_channels
-        self.encoder_output_heads = nn.ModuleList([
-                SegmentationHead(
-                    in_channels=in_channel,
-                    out_channels=self.n_classes,
-                    kernel_size=1,
-                ) for in_channel in encoder_dims[1:]
-            ])
-        
+        if not self.skip_encoder:
+            encoder_dims = self.encoder.out_channels
+            self.encoder_output_heads = nn.ModuleList([
+                    SegmentationHead(
+                        in_channels=in_channel,
+                        out_channels=self.n_classes,
+                        kernel_size=1,
+                    ) for in_channel in encoder_dims[1:]
+                ])
+            
         self.decoder_output_heads = nn.ModuleList([
                 SegmentationHead(
                     in_channels=in_channel,
@@ -83,9 +86,11 @@ class UNetLE(nn.Module):
         x = batch["image"]
         encoder = self.encoder(x)
         encoder = encoder[1:]
-        outputs = [
-            self.encoder_output_heads[i](encoder[i]) for i in range(len(encoder))
-        ]
+        
+        if not self.skip_encoder:
+            outputs = [self.encoder_output_heads[i](encoder[i]) for i in range(len(encoder))]
+        else:
+            outputs = []
 
         encoder = encoder[::-1]  # reverse channels to start from head of encoder
 
