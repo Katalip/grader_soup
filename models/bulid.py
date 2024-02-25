@@ -10,7 +10,8 @@ def build_model(args):
     if args.net_arch == "TAB":
         model = build_TAB(args)
     elif args.net_arch == 'Unet':
-        model = UNet()
+        input_channels = 2 if args.dataset == 'Hecktor' else 3
+        model = UNet(input_channels=input_channels)
         print('unet_selected')
     elif args.net_arch == 'UnetLE':
         model = UNetLE(skip_encoder=args.le_skip_encoder)

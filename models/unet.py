@@ -29,7 +29,8 @@ class UNet(nn.Module):
         encoder_name = 'resnet50',
         encoder_pretrain="imagenet",
         output_type={'raw'},
-        n_classes=2
+        n_classes=2,
+        input_channels=3,
     ):
         """
         Args:
@@ -46,7 +47,9 @@ class UNet(nn.Module):
         self.output_type = output_type
         self.encoder_pretrain = encoder_pretrain
 
-        model = Unet(encoder_name=encoder_name, encoder_weights=encoder_pretrain)
+        model = Unet(encoder_name=encoder_name, 
+                     encoder_weights=encoder_pretrain, 
+                     in_channels=input_channels)
         self.encoder = model.encoder
         self.decoder = model.decoder
 

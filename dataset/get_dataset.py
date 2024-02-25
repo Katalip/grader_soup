@@ -1,5 +1,6 @@
 import torch
 from dataset.DiscRegion import get_data_path_list, Disc_Cup
+from dataset.hecktor import Hecktor22
 
 
 def getDataset(args, validate=False, transforms=None):
@@ -20,3 +21,6 @@ def getDataset(args, validate=False, transforms=None):
             return train_dataset, valid_dataset, test_set
         else:  # False
             return train_set, None, test_set
+    elif args.dataset == "Hecktor":
+        dataset = Hecktor22(args)
+        return dataset

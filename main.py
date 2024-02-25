@@ -9,7 +9,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="outputs")
     parser.add_argument("--num_worker", type=int, default=8)
     parser.add_argument("--dataroot", type=str, default='/.../datasets/DiscRegion')
-    parser.add_argument("--dataset", choices=["RIGA"], default="RIGA")
+    parser.add_argument("--dataset", choices=["RIGA", "Hecktor"], default="RIGA")
     parser.add_argument("--phase", choices=["train", "test"], default="train")
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--net_arch", choices=["TAB", "Unet", "UnetLE"], default="Unet")
@@ -27,6 +27,8 @@ def main():
     parser.add_argument("--img_channel", type=int, default=3)
     parser.add_argument("--standardize", action="store_true")
 
+    # hecktor
+    parser.add_argument("--use_non_empty", action="store_true")
 
     # training settings: classes; bs; lr; EPOCH; device_id
     parser.add_argument('--random_seed', type=int, default=27)
