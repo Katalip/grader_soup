@@ -14,7 +14,8 @@ def build_model(args):
         model = UNet(input_channels=input_channels)
         print('unet_selected')
     elif args.net_arch == 'UnetLE':
-        model = UNetLE(skip_encoder=args.le_skip_encoder)
+        input_channels = 2 if args.dataset == 'Hecktor' else 3
+        model = UNetLE(skip_encoder=args.le_skip_encoder, input_channels=input_channels)
         print('unet_le_selected')
     return model
 

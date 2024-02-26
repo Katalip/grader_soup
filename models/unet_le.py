@@ -37,7 +37,8 @@ class UNetLE(nn.Module):
         encoder_pretrain="imagenet",
         output_type={'raw'},
         n_classes=2,
-        skip_encoder=False
+        skip_encoder=False,
+        input_channels=3,
     ):
         """
         Args:
@@ -55,7 +56,7 @@ class UNetLE(nn.Module):
         self.encoder_pretrain = encoder_pretrain
         self.skip_encoder = skip_encoder
 
-        model = Unet(encoder_name=encoder_name, encoder_weights=encoder_pretrain)
+        model = Unet(encoder_name=encoder_name, encoder_weights=encoder_pretrain, in_channels=input_channels)
         self.encoder = model.encoder
         self.decoder = model.decoder
 

@@ -17,6 +17,16 @@ gt_type_train_to_annotator = {
     3: 'A4',
 }
 
+AUX_WEIGHT = 0.3
+
+class RMSELoss(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mse = torch.nn.MSELoss()
+        
+    def forward(self,yhat,y):
+        return torch.sqrt(self.mse(yhat,y))
+
 
 def save_checkpoint(model, optimizer, save_path):
     checkpoint = {
@@ -25,8 +35,8 @@ def save_checkpoint(model, optimizer, save_path):
     torch.save(checkpoint, save_path)
 
 
-def train_hecktor(args, log_folder, checkpoint_folder, visualization_folder, metrics_folder,
-                   model, optimizer, loss_func, train_set, gt_train_name):
+def train_hecktor_le(args, log_folder, checkpoint_folder, visualization_folder, metrics_folder,
+                   model, optimizer, loss_function, train_set, gt_train_name):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
 
     model = model.cuda()
@@ -35,7 +45,7 @@ def train_hecktor(args, log_folder, checkpoint_folder, visualization_folder, met
                               shuffle=True, 
                               num_workers=args.num_worker, 
                               pin_memory=True)
-    
+    rmse_loss = RMSELoss()
     amp_grad_scaler = GradScaler()
 
     n_trainable_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -54,11 +64,9 @@ def train_hecktor(args, log_folder, checkpoint_folder, visualization_folder, met
         print(this_epoch)
         model.train()
         train_loss = 0.0
+        train_var_loss = 0.0
         train_soft_dice_gtvp = 0.0
         train_soft_dice_gtvn = 0.0
-
-        best_val_loss = float('inf')
-        best_val_dice = 0
 
         for step, data in enumerate(tqdm(train_loader, total=len(train_loader))):
             imgs = data['image'].to(dtype=torch.float32).cuda()
@@ -67,21 +75,41 @@ def train_hecktor(args, log_folder, checkpoint_folder, visualization_folder, met
 
             optimizer.zero_grad()
             with autocast():
-                output = model({'image': imgs})
+                outputs = model({'image': imgs})
 
-            if args.gt_type_train == -1:
-                gt_mask = mask_major_vote.cuda()
-            else:
-                gt_mask = mask[args.gt_type_train].cuda()
+            gt_mask = mask_major_vote.cuda()
+            
+            total_loss = 0
+            outputs_sigmoid = []
+            weights = [AUX_WEIGHT if i < len(outputs) - 1 else 1 for i in range(len(outputs))]
+            for i, out in enumerate(outputs):
+                layer_gt_mask = gt_mask
+                if args.use_label_sampling:
+                    if i < len(outputs) - 1:
+                        mask_index = np.random.randint(0, len(mask))
+                        layer_gt_mask = mask[mask_index].cuda()
+                
 
-            loss = loss_func(output['raw'], gt_mask)
-            amp_grad_scaler.scale(loss).backward()
+                out = torch.nn.functional.interpolate(out, size=layer_gt_mask.shape[2:])
+                outputs_sigmoid.append(torch.sigmoid(out))
+                loss_value = loss_function(out, layer_gt_mask)
+                total_loss += weights[i] * loss_value
+            
+            preds = torch.stack(outputs_sigmoid, dim=0).sum(dim=0) / len(outputs)
+
+            if args.use_var_loss:
+                variance_heatmap_output = torch.stack(outputs_sigmoid, dim=0).var(dim=0)
+                variance_heatmap_mask = torch.stack(mask, dim=0).var(dim=0)
+                var_loss = rmse_loss(variance_heatmap_output, variance_heatmap_mask.half().cuda())
+                total_loss += 5*var_loss
+                train_var_loss += 5*var_loss * imgs.size(0)
+
+            amp_grad_scaler.scale(total_loss).backward()
             amp_grad_scaler.unscale_(optimizer)
             amp_grad_scaler.step(optimizer)
             amp_grad_scaler.update()
 
-            train_loss += (loss.item() * imgs.size(0))
-            preds = torch.sigmoid(output['raw']).to(dtype=torch.float32)
+            train_loss += (total_loss.item() * imgs.size(0))
             train_soft_dice_gtvn = train_soft_dice_gtvn + get_soft_dice(outputs=preds[:, 1, :, :].cpu(),
                                                                       masks=gt_mask[:, 1, :, :].cpu()) * imgs.size(0)
             train_soft_dice_gtvp = train_soft_dice_gtvp + get_soft_dice(outputs=preds[:, 0, :, :].cpu(),
@@ -90,27 +118,13 @@ def train_hecktor(args, log_folder, checkpoint_folder, visualization_folder, met
         wandb.log({"Train/dice_gtvp": train_soft_dice_gtvp / train_set.__len__()})
         wandb.log({"Train/dice_gtvn": train_soft_dice_gtvn / train_set.__len__()})
 
+        if args.use_var_loss:
+            wandb.log({"Train/var_loss": train_var_loss / train_set.__len__()})
+
         save_checkpoint(model, optimizer, checkpoint_folder + '/last.pt')
-        # if args.validate:
-        #     val_loss, val_soft_dice_gtvp, val_soft_dice_gtvn = validate_hecktor(args, model, val_set, loss_func)
-        #     wandb.log({"Loss/val": val_loss})
-        #     wandb.log({"Val/dice_gtvp": val_soft_dice_gtvp})
-        #     wandb.log({"Val/dice_gtvn": val_soft_dice_gtvn})
-
-        #     if val_loss <= best_val_loss:
-        #         save_checkpoint(model, optimizer, checkpoint_folder + '/best_loss.pt')
-        #         best_val_loss = val_loss
-            
-            # mean_val_dice = (val_soft_dice_gtvn + val_soft_dice_gtvp) / 2
-            # if mean_val_dice >= best_val_dice:
-            #     save_checkpoint(model, optimizer, checkpoint_folder + '/best_dice.pt')
-            #     best_val_dice = mean_val_dice
-
-        # if this_epoch % args.checkpoint_frequency == 0 and this_epoch > 0:
-        #     save_checkpoint(model, optimizer, checkpoint_folder + f'/epoch_{this_epoch}.pt')        
 
 
-def validate_hecktor(args, model, val_set, loss_func):
+def validate_hecktor_le(args, model, val_set, loss_func):
     model = model.cuda()
     val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_worker, pin_memory=True)
 
@@ -161,7 +175,7 @@ def test_visualization(imgs_name, Preds_visual, visualization_folder):
         cv2.imwrite(Pred_path, 0.5 * Pred_gtvp + 0.5 * Pred_gtvn)
 
 
-def test_hecktor(args, visualization_folder, metrics_folder, model, test_set):
+def test_hecktor_le(args, visualization_folder, metrics_folder, model, test_set):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device_id
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = model.cuda()
@@ -191,14 +205,15 @@ def test_hecktor(args, visualization_folder, metrics_folder, model, test_set):
             mask = data['mask']
             mask_major_vote = data['majority_mask']
 
-            output = model({'image': imgs})
+            outputs = model({'image': imgs})
+            mask_major_vote = mask_major_vote.cuda()
 
-            if args.gt_type_train == -1:
-                gt_mask = mask_major_vote.cuda()
-            else:
-                gt_mask = mask[args.gt_type_train].cuda()
-
-            preds = torch.sigmoid(output['raw'])
+            outputs_sigmoid = []
+            for out in outputs:
+                out = torch.nn.functional.interpolate(out, size=mask_major_vote.shape[2:])
+                outputs_sigmoid.append(torch.sigmoid(out))
+            
+            preds = torch.stack(outputs_sigmoid, dim=0).sum(dim=0) / len(outputs)
 
             imgs_visual.extend(data['name'])
             Preds_visual.append(preds)
