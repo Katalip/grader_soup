@@ -6,7 +6,7 @@ import torchvision.transforms as transforms
 import torch
 import cv2
 from torch.utils import data
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold
 
 
 def get_slice_id(file_name):
@@ -23,9 +23,15 @@ class Hecktor22(data.Dataset):
         self.augs = augs
         self.use_nonempty_only = args.use_non_empty
 
-        random_seed = args.random_seed
         patient_ids = os.listdir(self.root)
-        patients_train, patients_test = train_test_split(patient_ids, test_size=0.22, random_state=random_seed)
+
+        kf = KFold(n_splits=3, 
+                   random_state=args.random_seed, 
+                   shuffle=True)
+
+        train_ids, test_ids = list(kf.split(patient_ids))[args.fold]
+        patients_train = [patient_ids[i] for i in train_ids]
+        patients_test = [patient_ids[i] for i in test_ids]
         
         if args.phase == 'train':
             patients = patients_train

@@ -29,6 +29,7 @@ def main():
 
     # hecktor
     parser.add_argument("--use_non_empty", action="store_true")
+    parser.add_argument("--fold", type=int, default=0)
 
     # training settings: classes; bs; lr; EPOCH; device_id
     parser.add_argument('--random_seed', type=int, default=27)
